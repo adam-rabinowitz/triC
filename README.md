@@ -1,2 +1,1 @@
-# triC
-Scripts for the analysis of triC datasets
+# triC - Scripts for the analysis of triC datasets
