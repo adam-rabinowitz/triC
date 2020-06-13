@@ -1,6 +1,7 @@
 import argparse
 import collections
 import intervaltree
+import pyBigWig
 import pysam
 import re
 
@@ -15,11 +16,12 @@ def printCounter(
 
 
 # Creates interval trees containing restriction fragments in fasta file
-def createFragmentTrees(
+def parseFragmentBed(
     bed
 ):
     # Create output variables
     trees = collections.defaultdict(intervaltree.IntervalTree)
+    lengths = collections.OrderedDict()
     fragment = collections.namedtuple(
         'fragment', ['chr', 'start', 'end', 'index']
     )
@@ -41,7 +43,9 @@ def createFragmentTrees(
             # Raise error for negative length fragments
             else:
                 raise ValueError('negative length interval')
-    return(trees)
+            # Adjust chromsome lengths
+            lengths[chrom] = max(lengths.get(chrom, 0), end)
+    return(trees, lengths)
 
 
 # Function find intervals overlapping query sequence
@@ -239,16 +243,44 @@ def extractDistalLigations(
 
 # Function to save ligations to file
 def saveLigations(
-    ligationDict, path
+    ligations, path
 ):
     with open(path, 'wt') as outfile:
-        for name, fragments in ligationDict.items():
+        for name, fragments in ligations.items():
             indices = [str(x.index) for x in fragments]
             locations = ['{}:{}-{}'.format(*x[0:3]) for x in fragments]
             line = '{}\t{}\t{}\n'.format(
                 name, '_'.join(locations), '_'.join(indices)
             )
             outfile.write(line)
+
+
+def generateBigWig(
+    ligations, lengths, bigwig
+):
+    # Extract header from chromsome lengths
+    header = list(lengths.items())
+    # Count each fragment
+    fragment_counts = collections.defaultdict(int)
+    for reads in ligations.values():
+        for read in reads:
+            fragment_counts[read] += 1
+    # Extract fragments and sort
+    fragments = list(fragment_counts.keys())
+    fragments.sort(key=lambda x:x[3])
+    fragments = fragments[:10]
+    # Extract data
+    chroms = [x.chr for x in fragments]
+    starts = [x.start for x in fragments]
+    ends = [x.end for x in fragments]
+    values = [float(fragment_counts[x]) for x in fragments]
+    # Open bigwig, write and close
+    bw = pyBigWig.open(bigwig, 'w')
+    bw.addHeader(header)
+    bw.addEntries(
+        chroms, starts, ends=ends, values=values
+    )
+    bw.close()
 
 
 if __name__ == '__main__':
@@ -273,7 +305,7 @@ if __name__ == '__main__':
     )
     args = parser.parse_args()
     # Create interval tree
-    fragments = createFragmentTrees(args.digest)
+    fragments, chrom_lengths = parseFragmentBed(args.digest)
     probes = readProbes(args.probes, fragments, args.proximal)
     # Create read dictionary
     readDict, mappedCounter = parseSamFile(args.sam)
@@ -294,7 +326,11 @@ if __name__ == '__main__':
             demultiDict[probe], probes[probe].proximal
         )
         printCounter('\n{}'.format(probe), ligationCounter)
-    # Print ligationś
+    # Save ligations to text file
     for probe in ligationDict:
         path = '.'.join([args.prefix, probe, 'txt'])
         saveLigations(ligationDict[probe], path)
+    # Save ligations to bigwig
+    for probe in ligationDict:
+        path = '.'.join([args.prefix, probe, 'bw'])
+        generateBigWig(ligationDict[probe], chrom_lengths, path)
