@@ -207,38 +207,34 @@ def demultiplexAlignments(
 
 
 # Function to extract fragment ligations
-def extractLigations(
-    fragmentDict, proximal
+def extractDistalLigations(
+    ligations, proximal
 ):
     # Generate log and output variables
     counter = collections.OrderedDict([
         ('proximal', 0), ('duplicate', 0), ('ligated', 0)
     ])
-    ligationDict = collections.OrderedDict()
+    distal = collections.OrderedDict()
     # Loop through dictionaries
-    for name, fragments in fragmentDict.items():
+    for name, fragments in ligations.items():
         # Extract unique fragment indices
-        fragmentIndices = set([x.index for x in fragments])
-        fragmentDict = {x.index: x[0:3] for x in fragments}
-        counter['duplicate'] += (len(fragments) - len(fragmentIndices))
+        fragment_indices = set([x.index for x in fragments])
+        fragment_dict = {x.index: x for x in fragments}
+        duplicates = len(fragments) - len(fragment_indices)
+        counter['duplicate'] += duplicates
         # Find distal
-        distalIndices = fragmentIndices.difference(proximal)
-        counter['proximal'] += (len(fragmentIndices) - len(distalIndices))
+        proximal_indices = fragment_indices.intersection(proximal)
+        distal_indices = fragment_indices.difference(proximal)
+        counter['proximal'] += len(proximal_indices)
         # Process distal
-        if len(distalIndices) > 0:
-            counter['ligated'] += len(distalIndices)
-            distalIndices = list(distalIndices)
-            distalIndices.sort()
+        if len(distal_indices) > 0:
+            counter['ligated'] += len(distal_indices)
+            index_list = list(distal_indices)
+            index_list.sort()
             # Conjoinn ligations and store
-            fragmentList = []
-            for i in distalIndices:
-                fragmentLocation = '{}:{}-{}'.format(*fragmentDict[i])
-                fragmentList.append(fragmentLocation)
-            ligationDict[name] = (
-                '_'.join(fragmentList),
-                '_'.join(map(str, distalIndices))
-            )
-    return(ligationDict, counter)
+            fragment_list = [fragment_dict[x] for x in index_list]
+            distal[name] = fragment_list
+    return(distal, counter)
 
 
 # Function to save ligations to file
@@ -246,8 +242,12 @@ def saveLigations(
     ligationDict, path
 ):
     with open(path, 'wt') as outfile:
-        for name, (locations, indices) in ligationDict.items():
-            line = '{}\t{}\t{}\n'.format(name, locations, indices)
+        for name, fragments in ligationDict.items():
+            indices = [str(x.index) for x in fragments]
+            locations = ['{}:{}-{}'.format(*x[0:3]) for x in fragments]
+            line = '{}\t{}\t{}\n'.format(
+                name, '_'.join(locations), '_'.join(indices)
+            )
             outfile.write(line)
 
 
@@ -290,7 +290,7 @@ if __name__ == '__main__':
     # Extract ligations
     ligationDict = collections.OrderedDict()
     for probe in demultiDict.keys():
-        ligationDict[probe], ligationCounter = extractLigations(
+        ligationDict[probe], ligationCounter = extractDistalLigations(
             demultiDict[probe], probes[probe].proximal
         )
         printCounter('\n{}'.format(probe), ligationCounter)
