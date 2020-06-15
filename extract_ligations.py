@@ -1,6 +1,7 @@
 import argparse
 import collections
 import intervaltree
+import os
 import pyBigWig
 import pysam
 import re
@@ -267,7 +268,7 @@ def generateBigWig(
             fragment_counts[read] += 1
     # Extract fragments and sort
     fragments = list(fragment_counts.keys())
-    fragments.sort(key=lambda x:x[3])
+    fragments.sort(key=lambda x: x[3])
     fragments = fragments[:10]
     # Extract data
     chroms = [x.chr for x in fragments]
@@ -304,6 +305,11 @@ if __name__ == '__main__':
         '--prefix', required=True, type=str, help='output prefix'
     )
     args = parser.parse_args()
+    # Generate output directory
+    abs_path = os.path.abspath(args.prefix)
+    abs_dir = os.path.dirname(abs_path)
+    if not os.path.isdir(abs_dir):
+        os.makedirs(abs_dir)
     # Create interval tree
     fragments, chrom_lengths = parseFragmentBed(args.digest)
     probes = readProbes(args.probes, fragments, args.proximal)
@@ -314,7 +320,9 @@ if __name__ == '__main__':
     uniqueReadDict, duplicateCounter = removeDuplicates(readDict)
     printCounter('\nDuplicates', duplicateCounter)
     # Find location of reads
-    fragmentDict, overlapCounter = mapReadsToFragments(uniqueReadDict, fragments)
+    fragmentDict, overlapCounter = mapReadsToFragments(
+        uniqueReadDict, fragments
+    )
     printCounter('\nFragments', overlapCounter)
     # Demultiplex data
     demultiDict, captureCounter = demultiplexAlignments(fragmentDict, probes)
