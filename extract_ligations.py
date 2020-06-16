@@ -272,7 +272,6 @@ def generate_bigwig(
     # Extract fragments and sort
     fragments = list(fragment_counts.keys())
     fragments.sort(key=lambda x: x[3])
-    fragments = fragments[:10]
     # Extract data
     chroms = [x.chr for x in fragments]
     starts = [x.start for x in fragments]
