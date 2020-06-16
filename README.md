@@ -28,6 +28,9 @@ exract_ligations.py:
         the ligation analysis.
     --prefix - The prefix of the output ligation files.
 
-    An output file of three columns is generated for each capture probe. The
-    three columns are, FASTQ read name, location of the ligated fragments and
-    the index of the ligated fragments.
+    An output text file of four columns is generated containing the ligations
+    for all captured fragments. The four columns are, probe name, FASTQ read name,
+    location of the ligated fragments and the index of the ligated fragments.
+    
+    Additionaly a bigwig is generated for each probes showing the count of captured
+    fragments.
