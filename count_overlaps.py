@@ -248,6 +248,9 @@ if __name__ == '__main__':
         '--digest', required=True, help='genome digestion BED file'
     )
     parser.add_argument(
+        '--proximal', required=True, type=int, help='minimum ligation distance'
+    )
+    parser.add_argument(
         '--regions', required=True, help='region of interest BED file'
     )
     parser.add_argument(
@@ -270,9 +273,9 @@ if __name__ == '__main__':
     # Get trimers
     trimers = collections.OrderedDict()
     for probe, ligations in distal_ligations.items():
-        trimers[probe], trimer_counts = extract_trimers(ligations, 2000)
+        trimers[probe], trimer_counts = extract_trimers(ligations, args.proximal)
         print_counter('\n{}'.format(probe), trimer_counts)
     # Count overlaps
     perform_independence_test(
-        loops, regions, trimers, 'results.txt'
+        loops, regions, trimers, args.output
     )
