@@ -8,7 +8,7 @@ import re
 
 
 # Function to print dictionary with title
-def printCounter(
+def print_counter(
     title, d
 ):
     print(title)
@@ -17,7 +17,7 @@ def printCounter(
 
 
 # Creates interval trees containing restriction fragments in fasta file
-def parseFragmentBed(
+def parse_fragments(
     bed
 ):
     # Create output variables
@@ -50,7 +50,7 @@ def parseFragmentBed(
 
 
 # Function find intervals overlapping query sequence
-def findOverlappingFragments(
+def find_overlaps(
     fragments, chrom, start, end
 ):
     intervals = fragments[chrom].overlap(start, end)
@@ -59,46 +59,47 @@ def findOverlappingFragments(
 
 
 # Function to demultiplex intervals
-def readProbes(
+def parse_probes(
     bed, fragments, proximity
 ):
     # Create output variables
     bait = collections.namedtuple('bait', ['location', 'proximal'])
-    baitDict = collections.OrderedDict()
+    baits = collections.OrderedDict()
     with open(bed, 'rt') as infile:
         for line in infile:
             # Extract probe location
             chrom, start, end, name = line.strip().split('\t')
             start, end = int(start), int(end)
             # Find probe fragment index
-            probeOverlap = findOverlappingFragments(
+            probe_overlap = find_overlaps(
                 fragments, chrom, start, end
             )
-            if len(probeOverlap) != 1:
+            if len(probe_overlap) != 1:
                 raise ValueError("no unique bait for {}".format(name))
+            probe_overlap = probe_overlap[0]
             # Find proximity overlaps
-            proximityStart = probeOverlap[0].start - proximity
-            proximityEnd = probeOverlap[0].end + proximity
-            proximityOverlaps = findOverlappingFragments(
-                fragments, chrom, proximityStart, proximityEnd
+            proximity_start = probe_overlap.start - proximity
+            proximity_end = probe_overlap.end + proximity
+            proximity_overlaps = find_overlaps(
+                fragments, chrom, proximity_start, proximity_end
             )
-            proximityIndices = set([x.index for x in proximityOverlaps])
+            proximity_indices = set([x.index for x in proximity_overlaps])
             # Add data to output
-            baitDict[name] = bait(
-                probeOverlap[0], proximityIndices
+            baits[name] = bait(
+                probe_overlap, proximity_indices
             )
-    return(baitDict)
+    return(baits)
 
 
 # Function to extract all reads from a sam file
-def parseSamFile(
+def parse_sam(
     sam, pattern='^(.*?):RF(\\d+):(\\d+)$'
 ):
     # Generate log and output variables
     counter = collections.OrderedDict([
         ('unmapped', 0), ('mapped', 0)
     ])
-    readDict = collections.defaultdict(list)
+    reads = collections.defaultdict(list)
     # Create regx and pattern to save data
     regx = re.compile('^(.*?):RF(\\d+):(\\d+)$')
     with pysam.Samfile(sam) as infile:
@@ -118,108 +119,108 @@ def parseSamFile(
                     read.reference_end, '-' if read.is_reverse else '+'
                 )
                 # Add to dictionary
-                readDict[name].append((chunk, location))
-    return(readDict, counter)
+                reads[name].append((chunk, location))
+    return(reads, counter)
 
 
 # Function removes reads with a single or duplicate alignments
-def removeDuplicates(
-    readDict
+def remove_duplicates(
+    reads
 ):
     # Gnerate log and output variables
     counter = collections.OrderedDict([
         ('duplicates', 0), ('unique', 0)
     ])
-    filterDict = collections.defaultdict(list)
+    filtered = collections.defaultdict(list)
     # Loop through reads and dtermine if location are unique
-    previousLocations = set()
-    for name in readDict.keys():
+    previous_locations = set()
+    for name in reads.keys():
         # Extracr read locations
-        reads = readDict[name]
-        reads.sort()
-        locations = '_'.join(['_'.join(map(str, x[1])) for x in reads])
+        read_data = reads[name]
+        read_data.sort()
+        locations = '_'.join(['_'.join(map(str, x[1])) for x in read_data])
         # Remove singletons
-        if locations in previousLocations:
-            counter['duplicates'] += len(reads)
+        if locations in previous_locations:
+            counter['duplicates'] += len(read_data)
         else:
-            counter['unique'] += len(reads)
-            previousLocations.add(locations)
-            filterDict[name] = reads
-    return(filterDict, counter)
+            counter['unique'] += len(read_data)
+            previous_locations.add(locations)
+            filtered[name] = read_data
+    return(filtered, counter)
 
 
-# Function to map reads to fragments
-def mapReadsToFragments(
-    readDict, fragments
+# Function to map reads to genomic fragments
+def map_ligations(
+    reads, fragments
 ):
     # Generate log and output variables
     counter = collections.OrderedDict([
         ('zero', 0), ('single', 0), ('multiple', 0)
     ])
-    fragmentDict = collections.defaultdict(list)
+    ligations = collections.defaultdict(list)
     # Generate regx for extracting counts
-    for name, reads in readDict.items():
-        for read in reads:
+    for name, read_data in reads.items():
+        for read in read_data:
             chrom, start, end = read[1][0:3]
-            overlaps = findOverlappingFragments(fragments, chrom, start, end)
+            overlaps = find_overlaps(fragments, chrom, start, end)
             if len(overlaps) == 0:
                 counter['zero'] += 1
             elif len(overlaps) > 1:
                 counter['multiple'] += 1
             else:
-                fragmentDict[name].append(overlaps[0])
+                ligations[name].append(overlaps[0])
                 counter['single'] += 1
-    return(fragmentDict, counter)
+    return(ligations, counter)
 
 
 # Function to split fragments by bait
-def demultiplexAlignments(
-    fragmentDict, probes
+def demultiplex_ligations(
+    ligations, probes
 ):
     # Generate log and output variables
     counter = collections.OrderedDict([
         ('no baits', 0), ('multiple baits', 0)
     ])
-    demultiDict = collections.OrderedDict()
+    demultiplex = collections.OrderedDict()
     # Loop through probes and add to log and output
-    probeIndices = set()
-    probeNames = {}
+    probe_indices = set()
+    probe_names = {}
     for name in probes.keys():
         counter[name] = 0
-        demultiDict[name] = {}
+        demultiplex[name] = {}
         index = probes[name].location.index
-        probeIndices.add(index)
-        probeNames[index] = name
+        probe_indices.add(index)
+        probe_names[index] = name
     # Loop though intervals
-    for name, fragments in fragmentDict.items():
+    for name, fragments in ligations.items():
         # Get intervals overlapping baits
-        fragmentIndices = set([x.index for x in fragments])
-        commonIndices = fragmentIndices.intersection(probeIndices)
+        fragment_indices = set([x.index for x in fragments])
+        common_indices = fragment_indices.intersection(probe_indices)
         # Skip intervals without baits
-        if len(commonIndices) == 0:
+        if len(common_indices) == 0:
             counter['no baits'] += len(fragments)
         # Skip intervals with mutiple baits
-        elif len(commonIndices) > 1:
+        elif len(common_indices) > 1:
             counter['multiple baits'] += len(fragments)
         # Process unique baits
         else:
             # Get probe name
-            probeIndex = commonIndices.pop()
-            probeName = probeNames[probeIndex]
-            counter[probeName] += len(fragments)
-            demultiDict[probeName][name] = fragments
-    return(demultiDict, counter)
+            probe_index = common_indices.pop()
+            probe_name = probe_names[probe_index]
+            counter[probe_name] += len(fragments)
+            demultiplex[probe_name][name] = fragments
+    return(demultiplex, counter)
 
 
 # Function to extract fragment ligations
-def extractDistalLigations(
+def remove_proximal(
     ligations, proximal
 ):
     # Generate log and output variables
     counter = collections.OrderedDict([
         ('proximal', 0), ('duplicate', 0), ('ligated', 0)
     ])
-    distal = collections.OrderedDict()
+    distal = {}
     # Loop through dictionaries
     for name, fragments in ligations.items():
         # Extract unique fragment indices
@@ -243,20 +244,22 @@ def extractDistalLigations(
 
 
 # Function to save ligations to file
-def saveLigations(
-    ligations, path
+def save_ligations(
+    probe_ligations, path
 ):
     with open(path, 'wt') as outfile:
-        for name, fragments in ligations.items():
-            indices = [str(x.index) for x in fragments]
-            locations = ['{}:{}-{}'.format(*x[0:3]) for x in fragments]
-            line = '{}\t{}\t{}\n'.format(
-                name, '_'.join(locations), '_'.join(indices)
-            )
-            outfile.write(line)
+        for probe, ligations in probe_ligations.items():
+            for name, fragments in ligations.items():
+                indices = [str(x.index) for x in fragments]
+                locations = ['{}:{}-{}'.format(*x[0:3]) for x in fragments]
+                line = '{}\t{}\t{}\t{}\n'.format(
+                    probe, name, '_'.join(locations), '_'.join(indices)
+                )
+                outfile.write(line)
 
 
-def generateBigWig(
+# Generates bigwig file for ligations from a single capture
+def generate_bigwig(
     ligations, lengths, bigwig
 ):
     # Extract header from chromsome lengths
@@ -311,34 +314,31 @@ if __name__ == '__main__':
     if not os.path.isdir(abs_dir):
         os.makedirs(abs_dir)
     # Create interval tree
-    fragments, chrom_lengths = parseFragmentBed(args.digest)
-    probes = readProbes(args.probes, fragments, args.proximal)
+    fragments, chrom_lengths = parse_fragments(args.digest)
+    probes = parse_probes(args.probes, fragments, args.proximal)
     # Create read dictionary
-    readDict, mappedCounter = parseSamFile(args.sam)
-    printCounter('Mapping', mappedCounter)
+    reads, mapped_counter = parse_sam(args.sam)
+    print_counter('Mapping', mapped_counter)
     # Remove duplicates
-    uniqueReadDict, duplicateCounter = removeDuplicates(readDict)
-    printCounter('\nDuplicates', duplicateCounter)
-    # Find location of reads
-    fragmentDict, overlapCounter = mapReadsToFragments(
-        uniqueReadDict, fragments
-    )
-    printCounter('\nFragments', overlapCounter)
+    unique_reads, duplicate_counter = remove_duplicates(reads)
+    print_counter('\nDuplicates', duplicate_counter)
+    # Find identity of ligated fragments
+    ligations, overlap_counter = map_ligations(unique_reads, fragments)
+    print_counter('\nFragments', overlap_counter)
     # Demultiplex data
-    demultiDict, captureCounter = demultiplexAlignments(fragmentDict, probes)
-    printCounter('\nDemultiplex', captureCounter)
-    # Extract ligations
-    ligationDict = collections.OrderedDict()
-    for probe in demultiDict.keys():
-        ligationDict[probe], ligationCounter = extractDistalLigations(
-            demultiDict[probe], probes[probe].proximal
+    probe_ligations, probe_counter = demultiplex_ligations(ligations, probes)
+    print_counter('\nDemultiplex', probe_counter)
+    # Extract distal ligations
+    distal_ligations = collections.OrderedDict()
+    for probe in probe_ligations.keys():
+        distal_ligations[probe], distal_counter = remove_proximal(
+            probe_ligations[probe], probes[probe].proximal
         )
-        printCounter('\n{}'.format(probe), ligationCounter)
+        print_counter('\n{}'.format(probe), distal_counter)
     # Save ligations to text file
-    for probe in ligationDict:
-        path = '.'.join([args.prefix, probe, 'txt'])
-        saveLigations(ligationDict[probe], path)
+    ligation_path = args.prefix + '.captured_ligations.txt'
+    save_ligations(distal_ligations, ligation_path)
     # Save ligations to bigwig
-    for probe in ligationDict:
+    for probe in distal_ligations:
         path = '.'.join([args.prefix, probe, 'bw'])
-        generateBigWig(ligationDict[probe], chrom_lengths, path)
+        generate_bigwig(distal_ligations[probe], chrom_lengths, path)
