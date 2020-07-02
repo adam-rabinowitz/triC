@@ -16,13 +16,12 @@ def print_counter(
         print('  {}: {}'.format(key, str(value)))
 
 
-# Creates interval trees containing restriction fragments in fasta file
-def parse_fragments(
+# Creates interval trees containing restriction fragments in bed file
+def create_fragment_trees(
     bed
 ):
     # Create output variables
     trees = collections.defaultdict(intervaltree.IntervalTree)
-    lengths = collections.OrderedDict()
     fragment = collections.namedtuple(
         'fragment', ['chr', 'start', 'end', 'index']
     )
@@ -45,8 +44,29 @@ def parse_fragments(
             else:
                 raise ValueError('negative length interval')
             # Adjust chromsome lengths
-            lengths[chrom] = max(lengths.get(chrom, 0), end)
-    return(trees, lengths)
+    return(trees)
+
+
+# Function to extract chromosome lengths from bed file
+def get_chromosome_lengths(
+    bed
+):
+    # Create output variables
+    lengths = collections.OrderedDict()
+    # Loop through lines of bed file
+    with open(bed, 'rt') as infile:
+        for line in infile:
+            # Extract fragment data
+            chrom, start, end = line.strip().split('\t')[:3]
+            end = int(end)
+            # Store lengths
+            try:
+                lengths[chrom] = max(lengths[chrom], end)
+            except KeyError:
+                lengths[chrom] = end
+    # Convert lengths to list of tuples and return
+    lengths = list(lengths.items())
+    return(lengths)
 
 
 # Function find intervals overlapping query sequence
@@ -213,7 +233,7 @@ def demultiplex_ligations(
 
 
 # Function to extract fragment ligations
-def remove_proximal(
+def remove_bait_proximal(
     ligations, proximal
 ):
     # Generate log and output variables
@@ -241,6 +261,9 @@ def remove_proximal(
             fragment_list = [fragment_dict[x] for x in index_list]
             distal[name] = fragment_list
     return(distal, counter)
+
+
+def
 
 
 # Function to save ligations to file
