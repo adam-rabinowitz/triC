@@ -1,6 +1,7 @@
 import argparse
 import collections
 import intervaltree
+import gzip
 import os
 import pyBigWig
 import pysam
@@ -21,7 +22,7 @@ def create_fragment_trees(
     bed
 ):
     # Create output variables
-    trees = collections.defaultdict(intervaltree.IntervalTree)
+    fragment_trees = collections.defaultdict(intervaltree.IntervalTree)
     fragment = collections.namedtuple(
         'fragment', ['chr', 'start', 'end', 'index']
     )
@@ -36,7 +37,7 @@ def create_fragment_trees(
                 interval = intervaltree.Interval(
                     start, end, fragment(chrom, start, end, index)
                 )
-                trees[chrom].add(interval)
+                fragment_trees[chrom].add(interval)
             # Skip zero length fragments
             elif start == end:
                 pass
@@ -44,7 +45,7 @@ def create_fragment_trees(
             else:
                 raise ValueError('negative length interval')
             # Adjust chromsome lengths
-    return(trees)
+    return(fragment_trees)
 
 
 # Function to extract chromosome lengths from bed file
@@ -71,19 +72,33 @@ def get_chromosome_lengths(
 
 # Function find intervals overlapping query sequence
 def find_overlaps(
-    fragments, chrom, start, end
+    fragment_trees, chrom, start, end
 ):
-    intervals = fragments[chrom].overlap(start, end)
-    tuples = [x[2] for x in intervals]
-    return(tuples)
+    intervals = fragment_trees[chrom].overlap(start, end)
+    fragments = [x[2] for x in intervals]
+    return(fragments)
+
+
+# Function to calculate genomc distance vetween 2 fragments
+def calculate_distance(
+    frag1, frag2
+):
+    # Calculate distances
+    if frag1.chr != frag2.chr:
+        distance = float('inf')
+    else:
+        distance = frag2.start - frag1.end
+    # Assert distance is positive and return
+    assert(distance > 0)
+    return(distance)
 
 
 # Function to demultiplex intervals
 def parse_probes(
-    bed, fragments, proximity
+    bed, fragment_trees, proximity
 ):
     # Create output variables
-    bait = collections.namedtuple('bait', ['location', 'proximal'])
+    bait = collections.namedtuple('bait', ['fragment', 'proximal'])
     baits = collections.OrderedDict()
     with open(bed, 'rt') as infile:
         for line in infile:
@@ -91,22 +106,22 @@ def parse_probes(
             chrom, start, end, name = line.strip().split('\t')
             start, end = int(start), int(end)
             # Find probe fragment index
-            probe_overlap = find_overlaps(
-                fragments, chrom, start, end
+            probe_fragments = find_overlaps(
+                fragment_trees, chrom, start, end
             )
-            if len(probe_overlap) != 1:
+            if len(probe_fragments) != 1:
                 raise ValueError("no unique bait for {}".format(name))
-            probe_overlap = probe_overlap[0]
+            probe_fragment = probe_fragments[0]
             # Find proximity overlaps
-            proximity_start = probe_overlap.start - proximity
-            proximity_end = probe_overlap.end + proximity
-            proximity_overlaps = find_overlaps(
-                fragments, chrom, proximity_start, proximity_end
+            proximity_start = probe_fragment.start - proximity
+            proximity_end = probe_fragment.end + proximity
+            proximity_fragments = find_overlaps(
+                fragment_trees, chrom, proximity_start, proximity_end
             )
-            proximity_indices = set([x.index for x in proximity_overlaps])
+            proximity_indices = set([x.index for x in proximity_fragments])
             # Add data to output
             baits[name] = bait(
-                probe_overlap, proximity_indices
+                probe_fragment, proximity_indices
             )
     return(baits)
 
@@ -124,12 +139,13 @@ def parse_sam(
     regx = re.compile('^(.*?):RF(\\d+):(\\d+)$')
     with pysam.Samfile(sam) as infile:
         for read in infile:
-            # Skip unmaped reads
+            # Skip unmapped reads
             if read.is_unmapped:
                 counter['unmapped'] += 1
-            # Process unmapped reads
+            # Process mapped reads
             else:
                 counter['mapped'] += 1
+                # Get read name and chunk
                 name = regx.match(read.query_name).groups()[0]
                 chunk = regx.match(read.query_name).groups()[1:3]
                 chunk = tuple(map(int, chunk))
@@ -151,27 +167,30 @@ def remove_duplicates(
     counter = collections.OrderedDict([
         ('duplicates', 0), ('unique', 0)
     ])
-    filtered = collections.defaultdict(list)
+    filtered = {}
     # Loop through reads and dtermine if location are unique
     previous_locations = set()
     for name in reads.keys():
         # Extracr read locations
         read_data = reads[name]
-        read_data.sort()
-        locations = '_'.join(['_'.join(map(str, x[1])) for x in read_data])
+        read_data = sorted(read_data, key=lambda x: x[0])
+        locations = [x[1] for x in read_data]
+        locations_str = '_'.join(
+            ['_'.join(map(str, location)) for location in locations]
+        )
         # Remove singletons
-        if locations in previous_locations:
+        if locations_str in previous_locations:
             counter['duplicates'] += len(read_data)
         else:
             counter['unique'] += len(read_data)
-            previous_locations.add(locations)
+            previous_locations.add(locations_str)
             filtered[name] = read_data
     return(filtered, counter)
 
 
 # Function to map reads to genomic fragments
 def map_ligations(
-    reads, fragments
+    reads, fragment_trees
 ):
     # Generate log and output variables
     counter = collections.OrderedDict([
@@ -182,13 +201,13 @@ def map_ligations(
     for name, read_data in reads.items():
         for read in read_data:
             chrom, start, end = read[1][0:3]
-            overlaps = find_overlaps(fragments, chrom, start, end)
-            if len(overlaps) == 0:
+            fragments = find_overlaps(fragment_trees, chrom, start, end)
+            if len(fragments) == 0:
                 counter['zero'] += 1
-            elif len(overlaps) > 1:
+            elif len(fragments) > 1:
                 counter['multiple'] += 1
             else:
-                ligations[name].append(overlaps[0])
+                ligations[name].append(fragments[0])
                 counter['single'] += 1
     return(ligations, counter)
 
@@ -201,18 +220,17 @@ def demultiplex_ligations(
     counter = collections.OrderedDict([
         ('no baits', 0), ('multiple baits', 0)
     ])
-    demultiplex = collections.OrderedDict()
+    demultiplex = {}
     # Loop through probes and add to log and output
     probe_indices = set()
     probe_names = {}
-    for name in probes.keys():
+    for name in probes:
         counter[name] = 0
-        demultiplex[name] = {}
-        index = probes[name].location.index
+        index = probes[name].fragment.index
         probe_indices.add(index)
         probe_names[index] = name
     # Loop though intervals
-    for name, fragments in ligations.items():
+    for read_name, fragments in ligations.items():
         # Get intervals overlapping baits
         fragment_indices = set([x.index for x in fragments])
         common_indices = fragment_indices.intersection(probe_indices)
@@ -228,85 +246,141 @@ def demultiplex_ligations(
             probe_index = common_indices.pop()
             probe_name = probe_names[probe_index]
             counter[probe_name] += len(fragments)
-            demultiplex[probe_name][name] = fragments
+            hash = (read_name, probe_name)
+            if len(hash) != 2:
+                raise ValueError('incorrect hash')
+            demultiplex[hash] = fragments
     return(demultiplex, counter)
 
 
 # Function to extract fragment ligations
 def remove_bait_proximal(
-    ligations, proximal
+    ligations, probes
 ):
     # Generate log and output variables
     counter = collections.OrderedDict([
-        ('proximal', 0), ('duplicate', 0), ('ligated', 0)
+        ('duplicate', 0), ('bait', 0), ('proximal', 0), ('distal', 0)
     ])
     distal = {}
     # Loop through dictionaries
-    for name, fragments in ligations.items():
-        # Extract unique fragment indices
-        fragment_indices = set([x.index for x in fragments])
+    for (read_name, probe_name), fragments in ligations.items():
+        # Get probe information
+        bait_index = probes[probe_name].fragment.index
+        proximal_indices = probes[probe_name].proximal
+        # Create fragment dictionary
         fragment_dict = {x.index: x for x in fragments}
+        fragment_indices = set(fragment_dict.keys())
         duplicates = len(fragments) - len(fragment_indices)
         counter['duplicate'] += duplicates
+        # Remove bait and count
+        fragment_indices.remove(bait_index)
+        counter['bait'] += 1
         # Find distal
-        proximal_indices = fragment_indices.intersection(proximal)
-        distal_indices = fragment_indices.difference(proximal)
-        counter['proximal'] += len(proximal_indices)
-        # Process distal
-        if len(distal_indices) > 0:
-            counter['ligated'] += len(distal_indices)
-            index_list = list(distal_indices)
-            index_list.sort()
-            # Conjoinn ligations and store
-            fragment_list = [fragment_dict[x] for x in index_list]
-            distal[name] = fragment_list
+        proximal_set = fragment_indices.intersection(proximal_indices)
+        distal_set = fragment_indices.difference(proximal_indices)
+        counter['proximal'] += len(proximal_set)
+        counter['distal'] += len(distal_set)
+        # Idenitfy distal fragments and store
+        if len(distal_set) > 0:
+            distal_list = sorted(list(distal_set))
+            distal_fragments = [fragment_dict[x] for x in distal_list]
+            distal[(read_name, probe_name)] = distal_fragments
     return(distal, counter)
 
 
-def
+# Function to extract trimers from ligation file
+def extract_trimers(
+    ligations, proximity
+):
+    # Generate output variables
+    counter = collections.OrderedDict([
+        ('single', 0), ('proximal', 0), ('trimer', 0)
+    ])
+    trimers = collections.OrderedDict()
+    # Open file and loop through lines
+    for (read_name, probe_name), fragments in ligations.items():
+        # Calculate distance
+        distances = [
+            calculate_distance(*f) for f in zip(fragments[:-1], fragments[1:])
+        ]
+        distal = [d >= proximity for d in distances]
+        # Generate output and return
+        if len(fragments) < 2:
+            counter['single'] += 1
+        elif sum(distal) < 1:
+            counter['proximal'] += 1
+        else:
+            counter['trimer'] += 1
+            trimers[(read_name, probe_name)] = fragments
+    return(trimers, counter)
 
 
 # Function to save ligations to file
 def save_ligations(
-    probe_ligations, path
+    ligations, probes, path
 ):
-    with open(path, 'wt') as outfile:
-        for probe, ligations in probe_ligations.items():
-            for name, fragments in ligations.items():
-                indices = [str(x.index) for x in fragments]
-                locations = ['{}:{}-{}'.format(*x[0:3]) for x in fragments]
-                line = '{}\t{}\t{}\t{}\n'.format(
-                    probe, name, '_'.join(locations), '_'.join(indices)
-                )
-                outfile.write(line)
+    # Process probes
+    probe_str = {}
+    for probe_name in probes:
+        probe_fragment = probes[probe_name].fragment
+        probe_location = "{}:{}-{}".format(*probe_fragment[0:3])
+        probe_index = probe_fragment.index
+        probe_str[probe_name] = "{}\t{}\t{}".format(
+            probe_name, probe_location, probe_index
+        )
+    # Create open function
+    if path.endswith('.gz'):
+        open_func = gzip.open
+    else:
+        open_func = open
+    # Open file and loop through ligations
+    with open_func(path, 'wt') as outfile:
+        for (read_name, probe_name), fragments in ligations.items():
+            # Generate fragment string
+            fragment_locations = [
+                "{}:{}-{}".format(*f[0:3]) for f in fragments
+            ]
+            location_str = '_'.join(fragment_locations)
+            # Generate index string
+            index_str = '_'.join(map(str, [x.index for x in fragments]))
+            # Create output line and write to file
+            line = '{}\t{}\t{}\t{}\n'.format(
+                read_name, probe_str[probe_name], location_str, index_str
+            )
+            outfile.write(line)
 
 
 # Generates bigwig file for ligations from a single capture
 def generate_bigwig(
-    ligations, lengths, bigwig
+    ligations, lengths, prefix
 ):
-    # Extract header from chromsome lengths
-    header = list(lengths.items())
-    # Count each fragment
-    fragment_counts = collections.defaultdict(int)
-    for reads in ligations.values():
-        for read in reads:
-            fragment_counts[read] += 1
+    # Count each fragment for each bait
+    probe_counts = {}
+    for (read_name, probe_name), fragments in ligations.items():
+        for fragment in fragments:
+            try:
+                probe_counts[probe_name][fragment] += 1
+            except KeyError:
+                probe_counts[probe_name] = collections.defaultdict(int)
+                probe_counts[probe_name][fragment] += 1
     # Extract fragments and sort
-    fragments = list(fragment_counts.keys())
-    fragments.sort(key=lambda x: x[3])
-    # Extract data
-    chroms = [x.chr for x in fragments]
-    starts = [x.start for x in fragments]
-    ends = [x.end for x in fragments]
-    values = [float(fragment_counts[x]) for x in fragments]
-    # Open bigwig, write and close
-    bw = pyBigWig.open(bigwig, 'w')
-    bw.addHeader(header)
-    bw.addEntries(
-        chroms, starts, ends=ends, values=values
-    )
-    bw.close()
+    for probe_name, fragment_counts in probe_counts.items():
+        fragments = list(fragment_counts.keys())
+        fragments.sort(key=lambda x: x.index)
+        # Extract data
+        chroms = [x.chr for x in fragments]
+        starts = [x.start for x in fragments]
+        ends = [x.end for x in fragments]
+        values = [float(fragment_counts[x]) for x in fragments]
+        # Create output path
+        path = '.'.join([prefix, probe_name, 'bw'])
+        # Open bigwig, write and close
+        bw = pyBigWig.open(path, 'w')
+        bw.addHeader(lengths)
+        bw.addEntries(
+            chroms, starts, ends=ends, values=values
+        )
+        bw.close()
 
 
 if __name__ == '__main__':
@@ -335,9 +409,11 @@ if __name__ == '__main__':
     abs_dir = os.path.dirname(abs_path)
     if not os.path.isdir(abs_dir):
         os.makedirs(abs_dir)
-    # Create interval tree
-    fragments, chrom_lengths = parse_fragments(args.digest)
-    probes = parse_probes(args.probes, fragments, args.proximal)
+    # Create interval trees and get chromosome lengths
+    fragment_trees = create_fragment_trees(args.digest)
+    chrom_lengths = get_chromosome_lengths(args.digest)
+    # Get probe data
+    probes = parse_probes(args.probes, fragment_trees, args.proximal)
     # Create read dictionary
     reads, mapped_counter = parse_sam(args.sam)
     print_counter('Mapping', mapped_counter)
@@ -345,22 +421,32 @@ if __name__ == '__main__':
     unique_reads, duplicate_counter = remove_duplicates(reads)
     print_counter('\nDuplicates', duplicate_counter)
     # Find identity of ligated fragments
-    ligations, overlap_counter = map_ligations(unique_reads, fragments)
+    ligations, overlap_counter = map_ligations(unique_reads, fragment_trees)
     print_counter('\nFragments', overlap_counter)
     # Demultiplex data
-    probe_ligations, probe_counter = demultiplex_ligations(ligations, probes)
+    captured_ligations, probe_counter = demultiplex_ligations(ligations, probes)
     print_counter('\nDemultiplex', probe_counter)
     # Extract distal ligations
-    distal_ligations = collections.OrderedDict()
-    for probe in probe_ligations.keys():
-        distal_ligations[probe], distal_counter = remove_proximal(
-            probe_ligations[probe], probes[probe].proximal
-        )
-        print_counter('\n{}'.format(probe), distal_counter)
-    # Save ligations to text file
-    ligation_path = args.prefix + '.captured_ligations.txt'
-    save_ligations(distal_ligations, ligation_path)
-    # Save ligations to bigwig
-    for probe in distal_ligations:
-        path = '.'.join([args.prefix, probe, 'bw'])
-        generate_bigwig(distal_ligations[probe], chrom_lengths, path)
+    distal_ligations, distal_counter = remove_bait_proximal(
+        captured_ligations, probes
+    )
+    print_counter('\nDistal', distal_counter)
+    # Extract trimers
+    trimers, trimer_counter = extract_trimers(
+        distal_ligations, args.proximal
+    )
+    print_counter('\nTrimers', trimer_counter)
+    # Save ligations to file
+    save_ligations(
+        distal_ligations, probes, args.prefix + '.all_ligations.txt.gz'
+    )
+    save_ligations(
+        trimers, probes, args.prefix + '.trimeric_ligations.txt.gz'
+    )
+    # Save bigwigs to file
+    generate_bigwig(
+        distal_ligations, chrom_lengths, args.prefix + '.all_ligations'
+    )
+    generate_bigwig(
+        trimers, chrom_lengths, args.prefix + '.trimeric_ligations'
+    )
