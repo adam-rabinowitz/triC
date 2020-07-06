@@ -25,12 +25,15 @@ exract_ligations.py:
         capture-c probes. The fourth column should be the name of the captured
         region.
     --proximal - The size of the upstream and downstream region to exclude from
-        the ligation analysis.
+        the ligation analysis. Also used to find "true" trimers.
     --prefix - The prefix of the output ligation files.
 
-    An output text file of four columns is generated containing the ligations
-    for all captured fragments. The four columns are, probe name, FASTQ read name,
-    location of the ligated fragments and the index of the ligated fragments.
+    Two output text files are generated. The first, prefixed
+    'all_ligations.txt.gz' contains all ligations associated with a single
+    bait. The second, prefixed 'trimeric_ligations.txt.gz' contains only the
+    true trimeric ligations. Each of these files contains 7 columns which are
+    as follows: read name, bait name, bait location, bait index, other-end
+    locations, other-end indices.
     
-    Additionaly a bigwig is generated for each probes showing the count of captured
-    fragments.
+    Additionaly a bigwig is generated for each probe showing the count for all
+    ligations as well as just the trimeric ligations.
