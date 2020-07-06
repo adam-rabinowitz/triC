@@ -132,11 +132,13 @@ def parse_sam(
 ):
     # Generate log and output variables
     counter = collections.OrderedDict([
-        ('unmapped', 0), ('mapped', 0)
+        ('unmapped', 0), ('singleton', 0), ('duplicates', 0), ('unique', 0)
     ])
+    previous_locations = set()
     reads = collections.defaultdict(list)
     # Create regx and pattern to save data
-    regx = re.compile('^(.*?):RF(\\d+):(\\d+)$')
+    regx = re.compile(pattern)
+    # Loop through reads in SAM file
     with pysam.Samfile(sam) as infile:
         for read in infile:
             # Skip unmapped reads
@@ -144,7 +146,6 @@ def parse_sam(
                 counter['unmapped'] += 1
             # Process mapped reads
             else:
-                counter['mapped'] += 1
                 # Get read name and chunk
                 name = regx.match(read.query_name).groups()[0]
                 chunk = regx.match(read.query_name).groups()[1:3]
@@ -156,36 +157,27 @@ def parse_sam(
                 )
                 # Add to dictionary
                 reads[name].append((chunk, location))
-    return(reads, counter)
-
-
-# Function removes reads with a single or duplicate alignments
-def remove_duplicates(
-    reads
-):
-    # Gnerate log and output variables
-    counter = collections.OrderedDict([
-        ('duplicates', 0), ('unique', 0)
-    ])
-    filtered = {}
-    # Loop through reads and dtermine if location are unique
-    previous_locations = set()
-    for name in reads.keys():
-        # Extracr read locations
+    # Loop through reads and determine if location are unique
+    for name in list(reads.keys()):
+        # Extract read locations
         read_data = reads[name]
         read_data = sorted(read_data, key=lambda x: x[0])
         locations = [x[1] for x in read_data]
         locations_str = '_'.join(
-            ['_'.join(map(str, location)) for location in locations]
+            ['{}_{}_{}_{}'.format(*x) for x in locations]
         )
-        # Remove singletons
-        if locations_str in previous_locations:
-            counter['duplicates'] += len(read_data)
+        # Count and store unique reads
+        if len(locations) == 1:
+            counter['singleton'] += 1
+            del reads[name]
+        elif locations_str in previous_locations:
+            counter['duplicates'] += len(locations)
+            del reads[name]
         else:
-            counter['unique'] += len(read_data)
+            counter['unique'] += len(locations)
+            reads[name] = locations
             previous_locations.add(locations_str)
-            filtered[name] = read_data
-    return(filtered, counter)
+    return(reads, counter)
 
 
 # Function to map reads to genomic fragments
@@ -198,9 +190,9 @@ def map_ligations(
     ])
     ligations = collections.defaultdict(list)
     # Generate regx for extracting counts
-    for name, read_data in reads.items():
-        for read in read_data:
-            chrom, start, end = read[1][0:3]
+    for name, reads in reads.items():
+        for read in reads:
+            chrom, start, end = read[0:3]
             fragments = find_overlaps(fragment_trees, chrom, start, end)
             if len(fragments) == 0:
                 counter['zero'] += 1
@@ -220,7 +212,7 @@ def demultiplex_ligations(
     counter = collections.OrderedDict([
         ('no baits', 0), ('multiple baits', 0)
     ])
-    demultiplex = {}
+    captured = {}
     # Loop through probes and add to log and output
     probe_indices = set()
     probe_names = {}
@@ -246,11 +238,8 @@ def demultiplex_ligations(
             probe_index = common_indices.pop()
             probe_name = probe_names[probe_index]
             counter[probe_name] += len(fragments)
-            hash = (read_name, probe_name)
-            if len(hash) != 2:
-                raise ValueError('incorrect hash')
-            demultiplex[hash] = fragments
-    return(demultiplex, counter)
+            captured[(read_name, probe_name)] = fragments
+    return(captured, counter)
 
 
 # Function to extract fragment ligations
@@ -282,8 +271,7 @@ def remove_bait_proximal(
         counter['distal'] += len(distal_set)
         # Idenitfy distal fragments and store
         if len(distal_set) > 0:
-            distal_list = sorted(list(distal_set))
-            distal_fragments = [fragment_dict[x] for x in distal_list]
+            distal_fragments = [fragment_dict[x] for x in distal_set]
             distal[(read_name, probe_name)] = distal_fragments
     return(distal, counter)
 
@@ -300,17 +288,19 @@ def extract_trimers(
     # Open file and loop through lines
     for (read_name, probe_name), fragments in ligations.items():
         # Calculate distance
+        fragments = sorted(fragments, key=lambda x: x.index)
         distances = [
             calculate_distance(*f) for f in zip(fragments[:-1], fragments[1:])
         ]
         distal = [d >= proximity for d in distances]
         # Generate output and return
+        frag_no = len(fragments)
         if len(fragments) < 2:
-            counter['single'] += 1
+            counter['single'] += frag_no
         elif sum(distal) < 1:
-            counter['proximal'] += 1
+            counter['proximal'] += frag_no
         else:
-            counter['trimer'] += 1
+            counter['trimer'] += frag_no
             trimers[(read_name, probe_name)] = fragments
     return(trimers, counter)
 
@@ -416,36 +406,29 @@ if __name__ == '__main__':
     probes = parse_probes(args.probes, fragment_trees, args.proximal)
     # Create read dictionary
     reads, mapped_counter = parse_sam(args.sam)
-    print_counter('Mapping', mapped_counter)
-    # Remove duplicates
-    unique_reads, duplicate_counter = remove_duplicates(reads)
-    print_counter('\nDuplicates', duplicate_counter)
+    print_counter('Alignment', mapped_counter)
     # Find identity of ligated fragments
-    ligations, overlap_counter = map_ligations(unique_reads, fragment_trees)
-    print_counter('\nFragments', overlap_counter)
+    ligations, overlap_counter = map_ligations(reads, fragment_trees)
+    print_counter('\nAssignment', overlap_counter)
     # Demultiplex data
-    captured_ligations, probe_counter = demultiplex_ligations(ligations, probes)
+    captured, probe_counter = demultiplex_ligations(ligations, probes)
     print_counter('\nDemultiplex', probe_counter)
     # Extract distal ligations
-    distal_ligations, distal_counter = remove_bait_proximal(
-        captured_ligations, probes
-    )
+    distal, distal_counter = remove_bait_proximal(captured, probes)
     print_counter('\nDistal', distal_counter)
     # Extract trimers
-    trimers, trimer_counter = extract_trimers(
-        distal_ligations, args.proximal
-    )
+    trimers, trimer_counter = extract_trimers(distal, args.proximal)
     print_counter('\nTrimers', trimer_counter)
     # Save ligations to file
     save_ligations(
-        distal_ligations, probes, args.prefix + '.all_ligations.txt.gz'
+        distal, probes, args.prefix + '.all_ligations.txt.gz'
     )
     save_ligations(
         trimers, probes, args.prefix + '.trimeric_ligations.txt.gz'
     )
     # Save bigwigs to file
     generate_bigwig(
-        distal_ligations, chrom_lengths, args.prefix + '.all_ligations'
+        distal, chrom_lengths, args.prefix + '.all_ligations'
     )
     generate_bigwig(
         trimers, chrom_lengths, args.prefix + '.trimeric_ligations'
