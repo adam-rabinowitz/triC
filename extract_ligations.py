@@ -330,9 +330,9 @@ def save_ligations(
             fragment_locations = [
                 "{}:{}-{}".format(*f[0:3]) for f in fragments
             ]
-            location_str = '_'.join(fragment_locations)
+            location_str = ','.join(fragment_locations)
             # Generate index string
-            index_str = '_'.join(map(str, [x.index for x in fragments]))
+            index_str = ','.join(map(str, [x.index for x in fragments]))
             # Create output line and write to file
             line = '{}\t{}\t{}\t{}\n'.format(
                 read_name, probe_str[probe_name], location_str, index_str
